@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>NATS Desk</string>
+<key>CFBundleDisplayName</key><string>NATS Desk</string>
+<key>CFBundleIdentifier</key><string>local.natsdesk.desktop</string>
+<key>CFBundleExecutable</key><string>NATSDesk</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>SUFeedURL</key><string>https://github.com/toystory98/nats-desk/releases/latest/download/appcast.xml</string>
+<key>SUPublicEDKey</key><string>Ea9pbaCfssl7tMD9GmfxYFEHCWJS82xoMGT2pRVSgs8=</string>
+<key>SUVerifyUpdateBeforeExtraction</key><true/>
+<key>SURequireSignedFeed</key><true/>
+<key>SUAutomaticallyUpdate</key><false/>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+<key>NSHumanReadableCopyright</key><string>NATS Desk — personal NATS workspace</string>
+</dict></plist>

@@ -1,0 +1,21 @@
+# Upload this file in Streams → Import YAML.
+# Required: name, subjects. Other settings are optional.
+streams:
+  - name: ORDERS
+    description: Order lifecycle events
+    subjects:
+      - orders.>
+    storage: file
+    retention: limits
+    max_age: 24h
+    max_messages: 100000
+    max_bytes: 104857600 # 100 MiB
+
+  - name: NOTIFICATIONS
+    subjects:
+      - notifications.>
+    storage: memory
+    retention: limits
+    max_age: 1h
+    max_messages: 10000
+    max_bytes: 10485760 # 10 MiB

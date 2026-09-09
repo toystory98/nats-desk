@@ -1,0 +1,15 @@
+/nats-desk
+/settings.json
+*.log
+
+/hosts.json
+
+/dist/
+
+.DS_Store
+.env
+.env.*
+*.pem
+*.p12
+*.key
+/.release-secrets/
