@@ -15,12 +15,14 @@ Update feed: https://github.com/toystory98/nats-desk/releases/latest/download/ap
 
 ```sh
 ./desktop/fetch-sparkle.sh
+set -e
 umask 077
-KEY_FILE=$(mktemp)
-trap 'rm -f "$KEY_FILE"' EXIT
+KEY_DIR=$(mktemp -d)
+KEY_FILE="$KEY_DIR/sparkle.key"
+trap 'rm -rf "$KEY_DIR"' EXIT
 ./dist/build/sparkle/bin/generate_keys --account toystory98.nats-desk -x "$KEY_FILE"
 gh secret set SPARKLE_PRIVATE_KEY --repo toystory98/nats-desk < "$KEY_FILE"
-rm -f "$KEY_FILE"
+rm -rf "$KEY_DIR"
 trap - EXIT
 ```
 
