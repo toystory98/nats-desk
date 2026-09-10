@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -124,12 +125,14 @@ func main() {
 func (a *app) handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /api/overview", a.overview)
+	m.HandleFunc("GET /api/consumers", a.consumers)
 	m.HandleFunc("GET /api/streams", a.streams)
 	m.HandleFunc("POST /api/streams", a.saveStream)
 	m.HandleFunc("POST /api/streams/import/preview", a.previewImport)
 	m.HandleFunc("POST /api/streams/import", a.createImport)
 	m.HandleFunc("PUT /api/streams/{name}", a.saveStream)
 	m.HandleFunc("GET /api/streams/{name}", a.stream)
+	m.HandleFunc("GET /api/streams/{name}/subjects", a.subjects)
 	m.HandleFunc("DELETE /api/streams/{name}", a.deleteStream)
 	m.HandleFunc("POST /api/streams/{name}/purge", a.purgeStream)
 	m.HandleFunc("GET /api/streams/{name}/messages", a.messages)
@@ -179,7 +182,7 @@ func (a *app) handler() http.Handler {
 				json.NewEncoder(w).Encode(map[string]string{"error": "Remote host: viewing and publishing only. Management operations are blocked."})
 				return
 			}
-			if a.nc == nil && r.URL.Path != "/api/overview" && r.URL.Path != "/api/streams" {
+			if a.nc == nil && r.URL.Path != "/api/overview" && r.URL.Path != "/api/streams" && r.URL.Path != "/api/consumers" {
 				fail(w, errors.New("Configure and connect the NATS client URL for this host to view or publish messages"))
 				return
 			}
@@ -239,7 +242,7 @@ func (a *app) overview(w http.ResponseWriter, r *http.Request) {
 	} else {
 		out["server_stats"] = v
 	}
-	v, e = a.monitor(r.Context(), "/connz?subs=1&limit=100")
+	v, e = a.monitor(r.Context(), "/connz?subs=detail&limit=100")
 	if e == nil {
 		out["connections"] = v
 	}
@@ -312,6 +315,114 @@ func (a *app) stream(w http.ResponseWriter, r *http.Request) {
 		consumers = append(consumers, c)
 	}
 	respond(w, map[string]any{"stream": s, "version": version(s.Config), "consumers": consumers})
+}
+
+type consumerSummary struct {
+	Account        string   `json:"account,omitempty"`
+	Stream         string   `json:"stream"`
+	Name           string   `json:"name"`
+	Subjects       []string `json:"subjects"`
+	Mode           string   `json:"mode"`
+	DeliverSubject string   `json:"deliver_subject,omitempty"`
+	QueueGroup     string   `json:"queue_group,omitempty"`
+	NumWaiting     int      `json:"num_waiting"`
+	NumPending     uint64   `json:"num_pending"`
+	NumAckPending  int      `json:"num_ack_pending"`
+	NumRedelivered int      `json:"num_redelivered"`
+}
+
+func summarizeConsumer(account, stream string, streamSubjects []string, info *nats.ConsumerInfo) consumerSummary {
+	subjects := append([]string(nil), info.Config.FilterSubjects...)
+	if len(subjects) == 0 && info.Config.FilterSubject != "" {
+		subjects = []string{info.Config.FilterSubject}
+	}
+	if len(subjects) == 0 {
+		subjects = append(subjects, streamSubjects...)
+	}
+	name := info.Name
+	if name == "" {
+		name = info.Config.Name
+	}
+	if name == "" {
+		name = info.Config.Durable
+	}
+	mode := "pull"
+	if info.Config.DeliverSubject != "" {
+		mode = "push"
+	}
+	return consumerSummary{
+		Account:        account,
+		Stream:         stream,
+		Name:           name,
+		Subjects:       subjects,
+		Mode:           mode,
+		DeliverSubject: info.Config.DeliverSubject,
+		QueueGroup:     info.Config.DeliverGroup,
+		NumWaiting:     info.NumWaiting,
+		NumPending:     info.NumPending,
+		NumAckPending:  info.NumAckPending,
+		NumRedelivered: info.NumRedelivered,
+	}
+}
+
+func sortConsumers(rows []consumerSummary) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Account != rows[j].Account {
+			return rows[i].Account < rows[j].Account
+		}
+		if rows[i].Stream != rows[j].Stream {
+			return rows[i].Stream < rows[j].Stream
+		}
+		return rows[i].Name < rows[j].Name
+	})
+}
+
+func (a *app) consumers(w http.ResponseWriter, r *http.Request) {
+	if a.nc == nil {
+		a.monitorConsumers(w, r)
+		return
+	}
+	rows := []consumerSummary{}
+	for stream := range a.js.StreamsInfo(nats.Context(r.Context())) {
+		if stream.State.Consumers == 0 {
+			continue
+		}
+		for consumer := range a.js.ConsumersInfo(stream.Config.Name, nats.Context(r.Context())) {
+			if consumer != nil {
+				rows = append(rows, summarizeConsumer("", stream.Config.Name, stream.Config.Subjects, consumer))
+			}
+		}
+	}
+	sortConsumers(rows)
+	respond(w, rows)
+}
+
+type subjectSummary struct {
+	Subject  string `json:"subject"`
+	Messages uint64 `json:"messages"`
+}
+
+func (a *app) subjects(w http.ResponseWriter, r *http.Request) {
+	s, err := a.js.StreamInfo(r.PathValue("name"), &nats.StreamInfoRequest{SubjectsFilter: ">"}, nats.Context(r.Context()))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	observed := make([]subjectSummary, 0, len(s.State.Subjects))
+	for subject, messages := range s.State.Subjects {
+		observed = append(observed, subjectSummary{Subject: subject, Messages: messages})
+	}
+	sort.Slice(observed, func(i, j int) bool {
+		if observed[i].Messages == observed[j].Messages {
+			return observed[i].Subject < observed[j].Subject
+		}
+		return observed[i].Messages > observed[j].Messages
+	})
+	total := len(observed)
+	if len(observed) > 500 {
+		observed = observed[:500]
+	}
+	respond(w, map[string]any{"configured": s.Config.Subjects, "observed": observed, "total": total})
 }
 
 type streamInput struct {

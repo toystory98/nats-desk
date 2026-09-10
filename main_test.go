@@ -53,6 +53,61 @@ func TestLocalBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestOverviewRequestsDetailedSubscriptions(t *testing.T) {
+	detailed := false
+	monitor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/connz" {
+			detailed = r.URL.Query().Get("subs") == "detail"
+			json.NewEncoder(w).Encode(map[string]any{"connections": []any{}, "total": 0})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer monitor.Close()
+	a := &app{cfg: settings{Monitor: monitor.URL}, client: monitor.Client()}
+	req := httptest.NewRequest("GET", "/api/overview", nil)
+	w := httptest.NewRecorder()
+	a.overview(w, req)
+	if w.Code != http.StatusOK || !detailed {
+		t.Fatal("overview did not request detailed subscriptions", w.Code)
+	}
+}
+
+func TestSummarizeConsumer(t *testing.T) {
+	info := &nats.ConsumerInfo{
+		Stream: "ACCOUNTING_SAP", Name: "accounting-worker",
+		Config:     nats.ConsumerConfig{FilterSubject: "evt.*.accounting.>"},
+		NumWaiting: 2, NumPending: 3, NumAckPending: 1,
+	}
+	got := summarizeConsumer("$G", info.Stream, []string{"evt.>"}, info)
+	if got.Stream != "ACCOUNTING_SAP" || got.Name != "accounting-worker" || got.Mode != "pull" || got.NumWaiting != 2 || got.NumPending != 3 || got.NumAckPending != 1 {
+		t.Fatalf("unexpected consumer summary: %#v", got)
+	}
+	if len(got.Subjects) != 1 || got.Subjects[0] != "evt.*.accounting.>" {
+		t.Fatalf("unexpected consumer subjects: %#v", got.Subjects)
+	}
+}
+
+func TestMonitorConsumers(t *testing.T) {
+	details := false
+	monitor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		details = r.URL.Path == "/jsz" && r.URL.Query().Get("consumers") == "true" && r.URL.Query().Get("config") == "true"
+		io.WriteString(w, `{"account_details":[{"name":"$G","stream_detail":[{"name":"ORDERS","config":{"subjects":["orders.>"]},"consumer_detail":[{"stream_name":"ORDERS","name":"worker","config":{"filter_subject":"orders.new"},"num_waiting":2}]}]}]}`)
+	}))
+	defer monitor.Close()
+	a := &app{cfg: settings{Monitor: monitor.URL}, client: monitor.Client()}
+	req := httptest.NewRequest("GET", "/api/consumers", nil)
+	req.Host = "127.0.0.1:8080"
+	w := httptest.NewRecorder()
+	a.handler().ServeHTTP(w, req)
+	var rows []consumerSummary
+	err := json.Unmarshal(w.Body.Bytes(), &rows)
+	if w.Code != http.StatusOK || err != nil || !details || len(rows) != 1 || rows[0].Name != "worker" || rows[0].NumWaiting != 2 {
+		t.Fatalf("unexpected monitor consumers response: status=%d details=%v rows=%#v error=%v", w.Code, details, rows, err)
+	}
+}
+
 func TestJetStreamLifecycle(t *testing.T) {
 	if os.Getenv("NATS_DESK_INTEGRATION") != "1" {
 		t.Skip("set NATS_DESK_INTEGRATION=1 to test against local NATS")
@@ -113,6 +168,11 @@ func TestJetStreamLifecycle(t *testing.T) {
 	call("PUT", "/api/streams/"+name, in, 400) // stale edit rejected
 	for i := 0; i < 3; i++ {
 		call("POST", "/api/publish", map[string]any{"stream": name, "subject": subject + ".created", "payload": fmt.Sprintf(`{"id":%d}`, i), "headers": map[string]string{"Content-Type": "application/json"}}, 200)
+	}
+	subjects := call("GET", "/api/streams/"+name+"/subjects", nil, 200)
+	observed := subjects["observed"].([]any)
+	if len(observed) != 1 || observed[0].(map[string]any)["subject"] != subject+".created" || observed[0].(map[string]any)["messages"] != float64(3) {
+		t.Fatal("observed subject list is incorrect", subjects)
 	}
 	call("DELETE", "/api/streams/"+name+"/messages/2", map[string]string{"confirm": "wrong"}, 400)
 	call("DELETE", "/api/streams/"+name+"/messages/2", map[string]string{"confirm": name + "/2"}, 200)

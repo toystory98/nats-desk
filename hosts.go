@@ -165,6 +165,21 @@ func (h *hostManager) serve(w http.ResponseWriter, r *http.Request) {
 		h.connect(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/hosts/") {
+		id := strings.TrimPrefix(r.URL.Path, "/api/hosts/")
+		if id == "" || strings.Contains(id, "/") {
+			fail(w, errors.New("invalid host profile ID"))
+			return
+		}
+		switch r.Method {
+		case "PUT":
+			h.updateProfile(w, r, id)
+			return
+		case "DELETE":
+			h.deleteProfile(w, r, id)
+			return
+		}
+	}
 	id := r.Header.Get("X-Nats-Host")
 	if r.URL.Path == "/api/live" {
 		id = r.URL.Query().Get("host")
@@ -181,6 +196,92 @@ func (h *hostManager) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	a.handler().ServeHTTP(w, r)
 }
+
+func (h *hostManager) updateProfile(w http.ResponseWriter, r *http.Request, id string) {
+	var in hostProfile
+	if !decode(w, r, &in) {
+		return
+	}
+	in.ID = id
+	if e := validateProfile(in); e != nil {
+		fail(w, e)
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	index := -1
+	for i, p := range h.profiles {
+		if p.ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		fail(w, errors.New("unknown profile"))
+		return
+	}
+	previous := h.profiles[index]
+	h.profiles[index] = in
+	if e := h.save(); e != nil {
+		h.profiles[index] = previous
+		fail(w, e)
+		return
+	}
+	old := h.apps[id]
+	if old == nil || previous.NATS != in.NATS || previous.Monitor != in.Monitor {
+		h.apps[id] = &app{cfg: settings{in.NATS, in.Monitor, h.listen}, client: &http.Client{Timeout: 3 * time.Second}}
+		if old != nil && old.nc != nil {
+			old.nc.Close()
+		}
+	}
+	respond(w, in)
+}
+
+func (h *hostManager) deleteProfile(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "local" {
+		fail(w, errors.New("the built-in local profile cannot be deleted"))
+		return
+	}
+	var in struct {
+		Confirm string `json:"confirm"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	index := -1
+	for i, p := range h.profiles {
+		if p.ID == id {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		fail(w, errors.New("unknown profile"))
+		return
+	}
+	if in.Confirm != h.profiles[index].Name {
+		fail(w, errors.New("confirmation does not match"))
+		return
+	}
+	previous := append([]hostProfile(nil), h.profiles...)
+	h.profiles = append(h.profiles[:index], h.profiles[index+1:]...)
+	if e := h.save(); e != nil {
+		h.profiles = previous
+		fail(w, e)
+		return
+	}
+	old := h.apps[id]
+	delete(h.apps, id)
+	if old != nil && old.nc != nil {
+		old.nc.Close()
+	}
+	respond(w, map[string]bool{"deleted": true})
+}
+
 func (h *hostManager) connect(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		ID       string `json:"id"`
@@ -290,6 +391,41 @@ func (a *app) monitorStreams(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	respond(w, out)
+}
+
+func (a *app) monitorConsumers(w http.ResponseWriter, r *http.Request) {
+	v, e := a.monitor(r.Context(), "/jsz?accounts=true&streams=true&consumers=true&config=true")
+	if e != nil {
+		fail(w, e)
+		return
+	}
+	b, _ := json.Marshal(v)
+	var doc struct {
+		Accounts []struct {
+			Name    string `json:"name"`
+			Streams []struct {
+				Name      string               `json:"name"`
+				Config    nats.StreamConfig    `json:"config"`
+				Consumers []*nats.ConsumerInfo `json:"consumer_detail"`
+			} `json:"stream_detail"`
+		} `json:"account_details"`
+	}
+	if e = json.Unmarshal(b, &doc); e != nil {
+		fail(w, e)
+		return
+	}
+	rows := []consumerSummary{}
+	for _, account := range doc.Accounts {
+		for _, stream := range account.Streams {
+			for _, consumer := range stream.Consumers {
+				if consumer != nil {
+					rows = append(rows, summarizeConsumer(account.Name, stream.Name, stream.Config.Subjects, consumer))
+				}
+			}
+		}
+	}
+	sortConsumers(rows)
+	respond(w, rows)
 }
 func remotePublishAllowed(subject string, headers map[string]string) error {
 	if strings.HasPrefix(subject, "$") || strings.HasPrefix(subject, "_") {

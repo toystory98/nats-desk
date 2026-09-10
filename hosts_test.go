@@ -90,6 +90,35 @@ func TestHostRoutingAndPersistence(t *testing.T) {
 	if err != nil || restored.apps[p.ID] == nil {
 		t.Fatal("profile not persisted", err)
 	}
+	w = request("PUT", "/api/hosts/"+p.ID, "local", `{"name":"Other updated","nats":"","monitor":"https://updated.example"}`)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "Other updated") {
+		t.Fatal("profile update failed", w.Code, w.Body.String())
+	}
+	restored, err = newHosts(a, file)
+	var updated hostProfile
+	if err == nil {
+		for _, candidate := range restored.profiles {
+			if candidate.ID == p.ID {
+				updated = candidate
+			}
+		}
+	}
+	if err != nil || updated.Name != "Other updated" || updated.Monitor != "https://updated.example" {
+		t.Fatal("profile update not persisted", err)
+	}
+	if w = request("DELETE", "/api/hosts/"+p.ID, "local", `{"confirm":"wrong"}`); w.Code != 400 {
+		t.Fatal("profile delete accepted wrong confirmation", w.Code)
+	}
+	if w = request("DELETE", "/api/hosts/local", "local", `{"confirm":"Local NATS"}`); w.Code != 400 {
+		t.Fatal("built-in local profile was deleted", w.Code)
+	}
+	if w = request("DELETE", "/api/hosts/"+p.ID, "local", `{"confirm":"Other updated"}`); w.Code != 200 {
+		t.Fatal("profile delete failed", w.Code, w.Body.String())
+	}
+	restored, err = newHosts(a, file)
+	if err != nil || restored.apps[p.ID] != nil {
+		t.Fatal("profile delete not persisted", err)
+	}
 	if err := validateProfile(hostProfile{Name: "Bad", NATS: "nats://user:secret@host:4222", Monitor: "https://host"}); err == nil {
 		t.Fatal("credentials should not be persisted in URLs")
 	}
