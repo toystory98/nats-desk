@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var serverURL: URL!
     private var quitting = false
     private var logHandle: FileHandle?
+    private var appName: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "NATS Desk" }
+    private var updatesEnabled: Bool { (Bundle.main.object(forInfoDictionaryKey: "NATSDeskUpdatesEnabled") as? NSNumber)?.boolValue ?? true }
 
     static func main() {
         let app = NSApplication.shared
@@ -25,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenus()
-        updaterController.startUpdater()
+        if updatesEnabled { updaterController.startUpdater() }
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         webView = WKWebView(frame: .zero, configuration: config)
@@ -34,13 +36,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         webView.allowsBackForwardNavigationGestures = false
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1320, height: 860),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "NATS Desk"
+        window.title = appName
         window.minSize = NSSize(width: 700, height: 600)
         window.contentView = webView
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        webView.loadHTMLString("<html><body style='background:#181722;color:#c5b1f0;font:18px -apple-system;display:grid;place-items:center;height:90vh'><p>Starting NATS Desk…</p></body></html>", baseURL: nil)
+        webView.loadHTMLString("<html><body style='background:#181722;color:#c5b1f0;font:18px -apple-system;display:grid;place-items:center;height:90vh'><p>Starting \(appName)…</p></body></html>", baseURL: nil)
         do { try startBackend() } catch { showFailure(error.localizedDescription) }
     }
 
@@ -48,13 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let menu = NSMenu()
         let appItem = NSMenuItem(); menu.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "About NATS Desk", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-        let updates = appMenu.addItem(withTitle: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
-        updates.target = updaterController
-        let automatic = appMenu.addItem(withTitle: "Automatically Check for Updates", action: #selector(toggleAutomaticUpdates(_:)), keyEquivalent: "")
-        automatic.target = self
+        appMenu.addItem(withTitle: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        if updatesEnabled {
+            let updates = appMenu.addItem(withTitle: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
+            updates.target = updaterController
+            let automatic = appMenu.addItem(withTitle: "Automatically Check for Updates", action: #selector(toggleAutomaticUpdates(_:)), keyEquivalent: "")
+            automatic.target = self
+        }
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit NATS Desk", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let editItem = NSMenuItem(); menu.addItem(editItem)
         let edit = NSMenu(title: "Edit"); editItem.submenu = edit
         for (name, action, key) in [("Undo", "undo:", "z"), ("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
@@ -79,7 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     private var dataDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NATS Desk", isDirectory: true)
+        let name = Bundle.main.object(forInfoDictionaryKey: "NATSDeskDataDirectory") as? String ?? "NATS Desk"
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(name, isDirectory: true)
     }
     @objc private func showDataFolder() { NSWorkspace.shared.open(dataDirectory) }
     @objc private func reloadDashboard() { if let url = serverURL { webView.load(URLRequest(url: url)) } }
@@ -88,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let fm = FileManager.default
         try fm.createDirectory(at: dataDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // A stable origin preserves WebKit theme settings across launches.
-        let port: UInt16 = 48127
+        let port = (Bundle.main.object(forInfoDictionaryKey: "NATSDeskPort") as? NSNumber)?.uint16Value ?? 48127
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw appError("Cannot allocate a local socket.") }
         var address = sockaddr_in(); address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -100,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
         }
         close(fd)
-        guard result == 0 else { throw appError("Port 48127 is already in use. Quit the other NATS Desk instance, then reopen this app.") }
+        guard result == 0 else { throw appError("Port \(port) is already in use. Quit the other \(appName) instance, then reopen this app.") }
         guard let helper = Bundle.main.url(forAuxiliaryExecutable: "nats-desk-server") else { throw appError("The bundled server is missing. Reinstall NATS Desk.") }
         let logURL = dataDirectory.appendingPathComponent("server.log")
         fm.createFile(atPath: logURL.path, contents: nil)
