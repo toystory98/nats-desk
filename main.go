@@ -37,11 +37,12 @@ type settings struct {
 	Listen  string `json:"listen"`
 }
 type app struct {
-	nc     *nats.Conn
-	js     nats.JetStreamContext
-	cfg    settings
-	client *http.Client
-	hosts  *hostManager
+	nc       *nats.Conn
+	js       nats.JetStreamContext
+	cfg      settings
+	client   *http.Client
+	hosts    *hostManager
+	snapshot atomic.Bool
 }
 
 func main() {
@@ -213,41 +214,15 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	return true
 }
-func (a *app) monitor(ctx context.Context, path string) (any, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(a.cfg.Monitor, "/")+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	res, err := a.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return nil, fmt.Errorf("monitoring HTTP %d", res.StatusCode)
-	}
-	var v any
-	err = json.NewDecoder(io.LimitReader(res.Body, 8<<20)).Decode(&v)
-	return v, err
-}
 func (a *app) overview(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"connected": a.nc != nil && a.nc.IsConnected(), "status": "MONITOR ONLY", "time": time.Now(), "server": a.cfg.Monitor, "can_manage": canManage(a.cfg)}
 	if a.nc != nil {
 		out["status"] = a.nc.Status().String()
 		out["server"] = a.nc.ConnectedAddr()
 	}
-	v, e := a.monitor(r.Context(), "/varz")
-	if e != nil {
-		out["monitor_error"] = e.Error()
-	} else {
-		out["server_stats"] = v
-	}
-	v, e = a.monitor(r.Context(), "/connz?subs=detail&limit=100")
-	if e == nil {
-		out["connections"] = v
-	}
+	a.monitorOverview(r.Context(), out)
 	if a.nc != nil && a.nc.IsConnected() {
-		v, e = a.js.AccountInfo(nats.Context(r.Context()))
+		v, e := a.js.AccountInfo(nats.Context(r.Context()))
 		if e != nil {
 			out["jetstream_error"] = e.Error()
 		} else {

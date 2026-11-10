@@ -385,7 +385,10 @@ func (a *app) monitorStreams(w http.ResponseWriter, r *http.Request) {
 	for _, account := range doc.Accounts {
 		for _, s := range account.Streams {
 			if s.Config == nil {
-				s.Config = map[string]any{"name": s.Name}
+				s.Config = map[string]any{}
+			}
+			if _, ok := s.Config["name"]; !ok {
+				s.Config["name"] = s.Name
 			}
 			out = append(out, map[string]any{"config": s.Config, "state": s.State})
 		}

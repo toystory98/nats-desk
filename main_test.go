@@ -108,6 +108,134 @@ func TestMonitorConsumers(t *testing.T) {
 	}
 }
 
+func TestMonitorRejectsHTML(t *testing.T) {
+	for _, tc := range []struct {
+		status      int
+		contentType string
+	}{{http.StatusOK, "text/html; charset=utf-8"}, {http.StatusNotFound, "text/plain"}} {
+		monitor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", tc.contentType)
+			w.WriteHeader(tc.status)
+			io.WriteString(w, "\n <!doctype html><title>NATS Monitor</title>")
+		}))
+		a := &app{cfg: settings{Monitor: monitor.URL}, client: monitor.Client()}
+		out := overviewJSON(t, a)
+		monitor.Close()
+		if msg, _ := out["monitor_error"].(string); !strings.Contains(msg, "HTML page, not NATS monitoring JSON") {
+			t.Fatalf("status %d %s: unexpected overview: %#v", tc.status, tc.contentType, out)
+		}
+	}
+}
+func snapshotMonitor(t *testing.T, snapshot string) (*httptest.Server, *int) {
+	varz := 0
+	monitor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/snapshot" {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, snapshot)
+			return
+		}
+		if r.URL.Path == "/varz" {
+			varz++
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, "<!doctype html><title>NATS Monitor</title>")
+	}))
+	t.Cleanup(monitor.Close)
+	return monitor, &varz
+}
+func overviewJSON(t *testing.T, a *app) map[string]any {
+	req := httptest.NewRequest("GET", "/api/overview", nil)
+	req.Host = "127.0.0.1:8080"
+	w := httptest.NewRecorder()
+	a.handler().ServeHTTP(w, req)
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("overview: status=%d body=%s error=%v", w.Code, w.Body.String(), err)
+	}
+	return out
+}
+func TestMonitorSnapshot(t *testing.T) {
+	monitor, varz := snapshotMonitor(t, `{"varz":{"server_name":"nats-3","in_msgs":10,"out_msgs":20,"connections":3,"subscriptions":5,"mem":100,"uptime":"1d"},"clients":[{"node":"nats-3","name":"svc","lang":"go","subscriptions":2,"uptime":"1h"}],"jsz":{"streams":4,"consumers":6,"storage":7,"memory":0,"account_details":[{"name":"$G","stream_detail":[{"name":"ORDERS","config":{"subjects":["orders.>"],"retention":"limits"},"state":{"messages":3}}]}]}}`)
+	a := &app{cfg: settings{Monitor: monitor.URL}, client: monitor.Client()}
+	for range 2 {
+		out := overviewJSON(t, a)
+		stats, _ := out["server_stats"].(map[string]any)
+		conns, _ := out["connections"].(map[string]any)
+		rows, _ := conns["connections"].([]any)
+		js, _ := out["jetstream"].(map[string]any)
+		if out["monitor_error"] != nil || stats["server_id"] != "nats-3" || stats["in_msgs"] != 10.0 || conns["total"] != 1.0 || len(rows) != 1 || js["streams"] != 4.0 {
+			t.Fatalf("unexpected snapshot overview: %#v", out)
+		}
+		row := rows[0].(map[string]any)
+		if row["ip"] != "nats-3" || row["num_subs"] != 2.0 || row["name"] != "svc" {
+			t.Fatalf("unexpected snapshot connection: %#v", row)
+		}
+	}
+	if *varz != 1 {
+		t.Fatalf("snapshot mode should skip /varz after detection, got %d requests", *varz)
+	}
+	req := httptest.NewRequest("GET", "/api/streams", nil)
+	req.Host = "127.0.0.1:8080"
+	w := httptest.NewRecorder()
+	a.handler().ServeHTTP(w, req)
+	var streams []struct {
+		Config map[string]any `json:"config"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &streams); err != nil || len(streams) != 1 || streams[0].Config["name"] != "ORDERS" || streams[0].Config["retention"] != "limits" {
+		t.Fatalf("unexpected snapshot streams: status=%d body=%s", w.Code, w.Body.String())
+	}
+	req = httptest.NewRequest("GET", "/api/consumers", nil)
+	req.Host = "127.0.0.1:8080"
+	w = httptest.NewRecorder()
+	a.handler().ServeHTTP(w, req)
+	if w.Code == http.StatusOK || !strings.Contains(w.Body.String(), "consumer details are not available") {
+		t.Fatalf("snapshot consumers should report unavailable details: status=%d body=%s", w.Code, w.Body.String())
+	}
+	overviewJSON(t, a)
+	if !a.snapshot.Load() || *varz != 1 {
+		t.Fatalf("unavailable consumer details must keep snapshot mode: snapshot=%v varz=%d", a.snapshot.Load(), *varz)
+	}
+}
+func TestMonitorSnapshotFormatChanged(t *testing.T) {
+	monitor, varz := snapshotMonitor(t, `{"version":2,"data":{"server":{}}}`)
+	a := &app{cfg: settings{Monitor: monitor.URL}, client: monitor.Client()}
+	for range 2 {
+		out := overviewJSON(t, a)
+		if msg, _ := out["monitor_error"].(string); !strings.Contains(msg, "snapshot format not recognized") || out["server_stats"] != nil {
+			t.Fatalf("unexpected overview: %#v", out)
+		}
+	}
+	if *varz != 2 || a.snapshot.Load() {
+		t.Fatalf("an unrecognized snapshot must not latch snapshot mode: varz=%d snapshot=%v", *varz, a.snapshot.Load())
+	}
+}
+func TestOverviewFallsBackToNATS(t *testing.T) {
+	if os.Getenv("NATS_DESK_INTEGRATION") != "1" {
+		t.Skip("set NATS_DESK_INTEGRATION=1 to test against local NATS")
+	}
+	nc, err := nats.Connect("nats://127.0.0.1:4222", nats.Timeout(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	js, err := nc.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor, _ := snapshotMonitor(t, `{"version":2}`)
+	a := &app{nc: nc, js: js, cfg: settings{Monitor: monitor.URL}, client: monitor.Client()}
+	out := overviewJSON(t, a)
+	stats, _ := out["server_stats"].(map[string]any)
+	conns, _ := out["connections"].(map[string]any)
+	rows, _ := conns["connections"].([]any)
+	warning, _ := out["monitor_warning"].(string)
+	if out["monitor_error"] != nil || !strings.Contains(warning, "snapshot format not recognized") || !strings.Contains(warning, "NATS client connection") {
+		t.Fatalf("expected fallback warning: %#v", out)
+	}
+	if id, _ := stats["server_id"].(string); !strings.HasPrefix(id, "account:") || stats["connections"].(float64) < 1 || stats["mem"] != nil || len(rows) < 1 {
+		t.Fatalf("unexpected fallback statistics: %#v", out)
+	}
+}
 func TestJetStreamLifecycle(t *testing.T) {
 	if os.Getenv("NATS_DESK_INTEGRATION") != "1" {
 		t.Skip("set NATS_DESK_INTEGRATION=1 to test against local NATS")
