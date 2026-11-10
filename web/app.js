@@ -1,9 +1,20 @@
 'use strict';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-function syncThemeToggle(){const dark=document.documentElement.dataset.theme==='dark';$('#theme-toggle').setAttribute('aria-checked',String(dark));$('#theme-toggle').title=dark?'Switch to light theme':'Switch to dark theme';$('#theme-label').textContent=dark?'Switch to light theme':'Switch to dark theme'}
-$('#theme-toggle').onclick=()=>{const theme=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=theme;try{localStorage.setItem('nats-desk-theme',theme)}catch{}syncThemeToggle()};
-window.addEventListener('storage',e=>{if(e.key==='nats-desk-theme'){document.documentElement.dataset.theme=e.newValue==='dark'?'dark':'light';syncThemeToggle()}});
-syncThemeToggle();
+function syncThemeToggle(){const dark=document.documentElement.dataset.theme==='dark';$('#theme-toggle').setAttribute('aria-checked',String(dark));$('#theme-toggle').title=dark?'Switch to light theme':'Switch to dark theme';$('#theme-label').textContent=dark?'Switch to light theme':'Switch to dark theme';$$('[data-theme-mode]').forEach(b=>{const on=b.dataset.themeMode===themeMode;b.classList.toggle('selected',on);b.setAttribute('aria-pressed',String(on))})}
+const {themeKey:THEME_KEY,scaleKey:SCALE_KEY,scales:UI_SCALES}=window.natsDeskPrefs,systemDark=matchMedia('(prefers-color-scheme: dark)');
+const themeValue=v=>v==='light'||v==='dark'?v:'system',scaleValue=v=>UI_SCALES.includes(Number(v))?Number(v):1;
+let themeMode='system',uiScale=1;try{themeMode=themeValue(localStorage.getItem(THEME_KEY));uiScale=scaleValue(localStorage.getItem(SCALE_KEY))}catch{}
+function applyTheme(){document.documentElement.dataset.theme=themeMode==='system'?(systemDark.matches?'dark':'light'):themeMode;syncThemeToggle()}
+function setThemeMode(mode){themeMode=themeValue(mode);try{themeMode==='system'?localStorage.removeItem(THEME_KEY):localStorage.setItem(THEME_KEY,themeMode)}catch{}applyTheme()}
+function applyUiScale(){document.documentElement.style.setProperty('--ui-scale',String(uiScale));$$('[data-ui-scale]').forEach(b=>{const on=Number(b.dataset.uiScale)===uiScale;b.classList.toggle('selected',on);b.setAttribute('aria-pressed',String(on))})}
+function setUiScale(v){uiScale=scaleValue(v);try{uiScale===1?localStorage.removeItem(SCALE_KEY):localStorage.setItem(SCALE_KEY,String(uiScale))}catch{}applyUiScale()}
+$('#theme-toggle').onclick=()=>setThemeMode(document.documentElement.dataset.theme==='dark'?'light':'dark');
+$$('[data-theme-mode]').forEach(b=>b.onclick=()=>setThemeMode(b.dataset.themeMode));
+$$('[data-ui-scale]').forEach(b=>b.onclick=()=>setUiScale(b.dataset.uiScale));
+systemDark.addEventListener('change',()=>{if(themeMode==='system')applyTheme()});
+window.addEventListener('storage',e=>{if(e.key===THEME_KEY){themeMode=themeValue(e.newValue);applyTheme()}else if(e.key===SCALE_KEY){uiScale=scaleValue(e.newValue);applyUiScale()}});
+document.addEventListener('keydown',e=>{if(!(e.metaKey||e.ctrlKey)||e.altKey)return;const i=UI_SCALES.indexOf(uiScale),k=e.key,c=e.code;if(k==='='||k==='+'||c==='Equal'||c==='NumpadAdd'){e.preventDefault();setUiScale(UI_SCALES[Math.min(i+1,UI_SCALES.length-1)])}else if(k==='-'||k==='_'||c==='Minus'||c==='NumpadSubtract'){e.preventDefault();setUiScale(UI_SCALES[Math.max(i-1,0)])}else if(k==='0'||c==='Digit0'||c==='Numpad0'){e.preventDefault();setUiScale(1)}});
+applyTheme();applyUiScale();
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=v=>Number(v||0).toLocaleString();
 const bytes=v=>{v=Number(v||0);if(v<1024)return `${v} B`;const i=Math.min(Math.floor(Math.log(v)/Math.log(1024)),4);return `${(v/1024**i).toFixed(1)} ${['B','KiB','MiB','GiB','TiB'][i]}`};
@@ -17,8 +28,8 @@ async function api(url,method='GET',body){const res=await fetch(url,{method,head
 function notice(msg,error=false,transient=false){const n=$('#notice');n.dataset.transient=String(transient);n.textContent=msg;n.classList.toggle('error',error);n.hidden=false}
 function safe(fn){return async(...args)=>{try{await fn(...args)}catch(e){notice(e.message,true)}}}
 function clearNotice(){const n=$('#notice');if(n.dataset.transient!=='true')n.hidden=true}
-function showPage(p){if(p!=='messages')stopLive();clearNotice();page=p;$$('.page').forEach(e=>e.hidden=e.id!==p);$$('[data-page]').forEach(e=>e.classList.toggle('active',e.dataset.page===p));$('#title').textContent={overview:'Overview',messages:'Messages',streams:'Streams',consumers:'Consumers'}[p];$('#breadcrumb').textContent=p.toUpperCase();$('#subtitle').textContent={overview:'A clear view of your message system.',messages:'Follow the flow. Inspect every detail.',streams:'Manage how your messages are stored.',consumers:'See what every JetStream consumer is waiting for.'}[p];if(p==='consumers')renderConsumers();requestAnimationFrame(syncBackToTop)}
-$$('[data-page]').forEach(b=>b.onclick=()=>{showPage(b.dataset.page);if(hostProfiles.length)refreshNow()});
+function showPage(p){if(p!=='messages')stopLive();clearNotice();page=p;$$('.page').forEach(e=>e.hidden=e.id!==p);$$('[data-page]').forEach(e=>e.classList.toggle('active',e.dataset.page===p));$('#title').textContent={overview:'Overview',messages:'Messages',streams:'Streams',consumers:'Consumers',settings:'Settings'}[p];$('#breadcrumb').textContent=p.toUpperCase();$('#subtitle').textContent={overview:'A clear view of your message system.',messages:'Follow the flow. Inspect every detail.',streams:'Manage how your messages are stored.',consumers:'See what every JetStream consumer is waiting for.',settings:'Make NATS Desk comfortable on this screen.'}[p];if(p==='consumers')renderConsumers();requestAnimationFrame(syncBackToTop)}
+$$('[data-page]').forEach(b=>b.onclick=()=>{showPage(b.dataset.page);if(hostProfiles.length&&b.dataset.page!=='settings')refreshNow()});
 const backToTop=$('#back-to-top');
 function activeTableWraps(){return $$('.page:not([hidden]) .table-wrap')}
 function syncBackToTop(){backToTop.hidden=window.scrollY<240&&!activeTableWraps().some(w=>w.scrollTop>120)}
@@ -82,11 +93,13 @@ async function refresh(){if(refreshing)return;refreshing=true;try{const results=
 function refreshLabel(ms){return ms%60000===0?`${ms/60000}m`:`${ms/1000}s`}
 function refreshWindowLabel(ms){const minutes=ms/60000;if(minutes<1)return `${Math.round(ms/1000)} seconds`;if(minutes<60)return `${Number(minutes.toFixed(1))} minutes`;return `${Number((minutes/60).toFixed(1))} hours`}
 function updateRefreshInputLimit(){const unit=Number($('#refresh-unit').value);$('#refresh-value').min=unit===1000?'5':'1';$('#refresh-value').max=String(MAX_REFRESH_MS/unit)}
-function syncRefreshControls(){const label=refreshLabel(refreshMs);$('#refresh-label').textContent=label;$('#traffic-refresh').textContent=`LIVE · ${label}`;$('#traffic-window').textContent=`Last ${refreshWindowLabel(refreshMs*60)}`;$$('[data-refresh-ms]').forEach(button=>{const selected=Number(button.dataset.refreshMs)===refreshMs;button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',String(selected))});if(![5000,10000,15000].includes(refreshMs)){const useMinutes=refreshMs>=60000&&refreshMs%60000===0;$('#refresh-unit').value=useMinutes?'60000':'1000';$('#refresh-value').value=String(refreshMs/Number($('#refresh-unit').value))}updateRefreshInputLimit()}
+function syncRefreshControls(){const label=refreshLabel(refreshMs);$('#refresh-label').textContent=label;$('#traffic-refresh').textContent=`LIVE · ${label}`;$('#traffic-window').textContent=`Last ${refreshWindowLabel(refreshMs*60)}`;$$('[data-refresh-ms]').forEach(button=>{const selected=Number(button.dataset.refreshMs)===refreshMs;button.classList.toggle('selected',selected);button.setAttribute('aria-pressed',String(selected))});const preset=$$('#settings [data-refresh-ms]').some(b=>Number(b.dataset.refreshMs)===refreshMs);$('#settings-refresh-custom').classList.toggle('selected',!preset);$('#settings-refresh-custom').textContent=preset?'Custom…':`Custom · ${label}`;if(![5000,10000,15000].includes(refreshMs)){const useMinutes=refreshMs>=60000&&refreshMs%60000===0;$('#refresh-unit').value=useMinutes?'60000':'1000';$('#refresh-value').value=String(refreshMs/Number($('#refresh-unit').value))}updateRefreshInputLimit()}
 function scheduleRefresh(){clearTimeout(refreshTimer);refreshTimer=0;if(document.hidden||!hostProfiles.length)return;refreshTimer=setTimeout(async()=>{await refresh();if(page==='consumers')await refreshConsumers();scheduleRefresh()},refreshMs)}
 async function refreshNow(){clearTimeout(refreshTimer);refreshTimer=0;await refresh();if(page==='consumers')await refreshConsumers();scheduleRefresh()}
 function setRefreshInterval(ms){if(!Number.isFinite(ms)||ms<MIN_REFRESH_MS||ms>MAX_REFRESH_MS)throw Error('Choose an interval from 5 seconds to 60 minutes.');refreshMs=ms;history=[];try{localStorage.setItem(REFRESH_STORAGE_KEY,String(ms))}catch{}syncRefreshControls();scheduleRefresh();$('#refresh-menu').open=false}
 $$('[data-refresh-ms]').forEach(button=>button.onclick=()=>setRefreshInterval(Number(button.dataset.refreshMs)));
+$('#settings-refresh-custom').onclick=e=>{e.stopPropagation();$('#refresh-menu').open=true;$('#refresh-value').focus()};
+$('#settings-reset').onclick=()=>{setThemeMode('system');setUiScale(1);if(refreshMs!==DEFAULT_REFRESH_MS)setRefreshInterval(DEFAULT_REFRESH_MS);try{localStorage.removeItem(REFRESH_STORAGE_KEY)}catch{}};
 $('#refresh-unit').onchange=updateRefreshInputLimit;
 $('#refresh-form').onsubmit=e=>{e.preventDefault();const value=Number($('#refresh-value').value),unit=Number($('#refresh-unit').value);const error=$('#refresh-error');error.textContent='';try{setRefreshInterval(value*unit)}catch(err){error.textContent=err.message}};
 $('#refresh').onclick=safe(refreshNow);
