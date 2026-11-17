@@ -22,6 +22,7 @@ type hostProfile struct {
 	Name    string `json:"name"`
 	NATS    string `json:"nats"`
 	Monitor string `json:"monitor"`
+	Role    string `json:"role"`
 }
 type hostManager struct {
 	mu       sync.RWMutex
@@ -44,6 +45,33 @@ func localEndpoint(raw string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 func canManage(cfg settings) bool { return localEndpoint(cfg.NATS) && localEndpoint(cfg.Monitor) }
+func defaultRole(nats, monitor string) string {
+	if canManage(settings{NATS: nats, Monitor: monitor}) {
+		return "admin"
+	}
+	return "reader"
+}
+func withRole(p hostProfile) hostProfile {
+	if p.Role == "" {
+		p.Role = defaultRole(p.NATS, p.Monitor)
+	}
+	return p
+}
+func allowed(role string, r *http.Request) bool {
+	if r.Method == "GET" || r.Method == "HEAD" {
+		return true
+	}
+	if r.Method == "POST" && r.URL.Path == "/api/publish" {
+		return role == "writer" || role == "admin"
+	}
+	return role == "admin"
+}
+
+var deniedMessage = map[string]string{
+	"reader": "Reader access: viewing only. Change this host's access in Manage NATS hosts to publish or manage streams.",
+	"writer": "Writer access: viewing and publishing only. Change this host's access in Manage NATS hosts to manage streams.",
+}
+
 func validateProfile(p hostProfile) error {
 	if strings.TrimSpace(p.Name) == "" {
 		return errors.New("host name is required")
@@ -60,6 +88,9 @@ func validateProfile(p hostProfile) error {
 		if e != nil || u.Hostname() == "" || !strings.Contains(" "+item.schemes+" ", " "+u.Scheme+" ") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return errors.New("use a valid endpoint URL without embedded credentials, query, or fragment")
 		}
+	}
+	if p.Role != "reader" && p.Role != "writer" && p.Role != "admin" {
+		return errors.New("access must be reader, writer, or admin")
 	}
 	return nil
 }
@@ -84,7 +115,7 @@ func (h *hostManager) save() error {
 }
 func newHosts(a *app, file string) (*hostManager, error) {
 	h := &hostManager{apps: map[string]*app{}, file: file, listen: a.cfg.Listen}
-	h.profiles = []hostProfile{{"local", "Local NATS", a.cfg.NATS, a.cfg.Monitor}}
+	h.profiles = []hostProfile{{"local", "Local NATS", a.cfg.NATS, a.cfg.Monitor, ""}}
 	if b, e := os.ReadFile(file); e == nil {
 		if e = json.Unmarshal(b, &h.profiles); e != nil {
 			return nil, e
@@ -93,7 +124,9 @@ func newHosts(a *app, file string) (*hostManager, error) {
 		return nil, e
 	}
 	seen := map[string]bool{}
-	for _, p := range h.profiles {
+	for i, p := range h.profiles {
+		p = withRole(p)
+		h.profiles[i] = p
 		if p.ID == "" || seen[p.ID] {
 			return nil, errors.New("duplicate or missing host profile ID")
 		}
@@ -103,15 +136,26 @@ func newHosts(a *app, file string) (*hostManager, error) {
 		}
 		cfg := settings{p.NATS, p.Monitor, a.cfg.Listen}
 		if cfg.NATS == a.cfg.NATS && cfg.Monitor == a.cfg.Monitor {
-			h.apps[p.ID] = a
+			h.apps[p.ID] = &app{nc: a.nc, js: a.js, cfg: a.cfg, client: a.client, role: p.Role}
 		} else {
-			h.apps[p.ID] = &app{cfg: cfg, client: &http.Client{Timeout: 3 * time.Second}}
+			h.apps[p.ID] = &app{cfg: cfg, client: &http.Client{Timeout: 3 * time.Second}, role: p.Role}
 		}
 	}
 	if !seen["local"] {
 		return nil, errors.New("hosts file must contain a local profile")
 	}
 	return h, nil
+}
+func (h *hostManager) release(nc *nats.Conn) {
+	if nc == nil {
+		return
+	}
+	for _, a := range h.apps {
+		if a.nc == nc {
+			return
+		}
+	}
+	nc.Close()
 }
 func (h *hostManager) close() {
 	h.mu.Lock()
@@ -130,7 +174,7 @@ func (h *hostManager) serve(w http.ResponseWriter, r *http.Request) {
 		out := []map[string]any{}
 		for _, p := range h.profiles {
 			a := h.apps[p.ID]
-			out = append(out, map[string]any{"id": p.ID, "name": p.Name, "nats": p.NATS, "monitor": p.Monitor, "can_manage": canManage(a.cfg), "connected": a.nc != nil && a.nc.IsConnected()})
+			out = append(out, map[string]any{"id": p.ID, "name": p.Name, "nats": p.NATS, "monitor": p.Monitor, "role": p.Role, "connected": a.nc != nil && a.nc.IsConnected()})
 		}
 		respond(w, out)
 		return
@@ -140,6 +184,7 @@ func (h *hostManager) serve(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &p) {
 			return
 		}
+		p = withRole(p)
 		if e := validateProfile(p); e != nil {
 			fail(w, e)
 			return
@@ -157,7 +202,7 @@ func (h *hostManager) serve(w http.ResponseWriter, r *http.Request) {
 			fail(w, e)
 			return
 		}
-		h.apps[p.ID] = &app{cfg: settings{p.NATS, p.Monitor, h.listen}, client: &http.Client{Timeout: 3 * time.Second}}
+		h.apps[p.ID] = &app{cfg: settings{p.NATS, p.Monitor, h.listen}, client: &http.Client{Timeout: 3 * time.Second}, role: p.Role}
 		respond(w, p)
 		return
 	}
@@ -203,6 +248,7 @@ func (h *hostManager) updateProfile(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	in.ID = id
+	in = withRole(in)
 	if e := validateProfile(in); e != nil {
 		fail(w, e)
 		return
@@ -230,10 +276,12 @@ func (h *hostManager) updateProfile(w http.ResponseWriter, r *http.Request, id s
 	}
 	old := h.apps[id]
 	if old == nil || previous.NATS != in.NATS || previous.Monitor != in.Monitor {
-		h.apps[id] = &app{cfg: settings{in.NATS, in.Monitor, h.listen}, client: &http.Client{Timeout: 3 * time.Second}}
-		if old != nil && old.nc != nil {
-			old.nc.Close()
+		h.apps[id] = &app{cfg: settings{in.NATS, in.Monitor, h.listen}, client: &http.Client{Timeout: 3 * time.Second}, role: in.Role}
+		if old != nil {
+			h.release(old.nc)
 		}
+	} else if previous.Role != in.Role {
+		h.apps[id] = &app{nc: old.nc, js: old.js, cfg: old.cfg, client: old.client, role: in.Role}
 	}
 	respond(w, in)
 }
@@ -276,8 +324,8 @@ func (h *hostManager) deleteProfile(w http.ResponseWriter, r *http.Request, id s
 	}
 	old := h.apps[id]
 	delete(h.apps, id)
-	if old != nil && old.nc != nil {
-		old.nc.Close()
+	if old != nil {
+		h.release(old.nc)
 	}
 	respond(w, map[string]bool{"deleted": true})
 }
@@ -334,7 +382,6 @@ func (h *hostManager) connect(w http.ResponseWriter, r *http.Request) {
 		fail(w, e)
 		return
 	}
-	a := &app{nc: nc, js: js, cfg: settings{p.NATS, p.Monitor, h.listen}, client: &http.Client{Timeout: 3 * time.Second}}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	index := -1
@@ -344,22 +391,30 @@ func (h *hostManager) connect(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	if index < 0 {
+		nc.Close()
+		fail(w, errors.New("unknown profile"))
+		return
+	}
 	previous := h.profiles[index]
-	h.profiles[index] = p
+	current := previous
+	current.NATS = p.NATS
+	h.profiles[index] = current
 	if e = h.save(); e != nil {
 		h.profiles[index] = previous
 		nc.Close()
 		fail(w, e)
 		return
 	}
+	a := &app{nc: nc, js: js, cfg: settings{current.NATS, current.Monitor, h.listen}, client: &http.Client{Timeout: 3 * time.Second}, role: current.Role}
 	prior := h.apps[p.ID]
 	h.apps[p.ID] = a
 	// Existing in-flight requests keep their original app; closing its connection
 	// prevents a stale live capture from silently crossing to a new endpoint.
-	if prior.nc != nil {
-		prior.nc.Close()
+	if prior != nil {
+		h.release(prior.nc)
 	}
-	respond(w, map[string]any{"id": p.ID, "can_manage": canManage(a.cfg)})
+	respond(w, map[string]any{"id": p.ID, "role": current.Role})
 }
 func (a *app) monitorStreams(w http.ResponseWriter, r *http.Request) {
 	v, e := a.monitor(r.Context(), "/jsz?accounts=true&streams=true&config=true")
@@ -432,11 +487,11 @@ func (a *app) monitorConsumers(w http.ResponseWriter, r *http.Request) {
 }
 func remotePublishAllowed(subject string, headers map[string]string) error {
 	if strings.HasPrefix(subject, "$") || strings.HasPrefix(subject, "_") {
-		return fmt.Errorf("remote publishing to reserved administration or reply subjects is blocked")
+		return fmt.Errorf("publishing to reserved administration or reply subjects needs Admin access on a local host")
 	}
 	for k := range headers {
 		if strings.EqualFold(strings.TrimSpace(k), "Nats-Rollup") {
-			return errors.New("rollup headers are blocked for remote hosts")
+			return errors.New("rollup headers need Admin access on a local host")
 		}
 	}
 	return nil

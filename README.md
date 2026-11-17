@@ -80,26 +80,28 @@ The import format accepts the fields shown above plus `description`. `name` and 
 - After any interrupted or uncertain request, preview again. Existing names are skipped on retry. Imports in this dashboard process are serialized; the existence check is not an atomic create-only lock against other NATS administrators.
 - Editing YAML invalidates the preview and requires another preview before creation.
 
-## Host switcher and remote permissions
+## Host switcher and access levels
 
-Use the host button in the header to choose **Local NATS** or **Add another host**. Saved profiles can be renamed, have either endpoint updated, or be deleted; the built-in local profile cannot be deleted. Profiles persist in `hosts.json` (override with `-profiles /path/hosts.json`). The selected profile is scoped to the browser tab. Switching reloads the tab and clears captured messages, previews, and open forms. In-flight requests retain their original host; changing one profile's client connection closes that profile's previous connection.
+Use the host button in the header to choose **Local NATS** or **Add another host**. Saved profiles can be renamed, have either endpoint updated, or be deleted; the built-in local profile cannot be deleted. Profiles persist in `hosts.json` (override with `-profiles /path/hosts.json`). The selected profile is scoped to the browser tab. Switching reloads the tab and clears captured messages, previews, and open forms. In-flight requests retain their original host; changing one profile's client connection closes that profile's previous connection unless another profile still uses it.
 
 Supply the externally reachable NATS client URL (`nats://`, `tls://`, `ws://`, or `wss://`) to enable retained messages, live capture, consumer details, and publishing. Monitoring URLs and client URLs are separate. Failed client connections leave the currently selected profile in place. Fresh installs include only localhost; existing saved profiles are preserved.
 
 Optional username/password or token can be entered when connecting; credentials remain in process memory and are not saved. URLs containing embedded credentials are rejected. Reconnect authenticated profiles after restarting the dashboard. TLS verification remains enabled; custom CA/client-certificate files and NATS `.creds` files are not supported by this form.
 
-Permissions are enforced on the backend, determined by the configured endpoints, not by a client-supplied role:
+Each profile has an **Access** level, chosen in the host dialog, saved in `hosts.json`, and enforced on the backend:
 
-| Operation | Both endpoints on loopback | Any non-loopback endpoint |
-| --- | --- | --- |
-| View monitoring, streams, messages | Yes | Yes (messages require client connection) |
-| Publish application messages | Yes | Yes (requires client connection) |
-| Create/edit/import/purge/delete streams | Yes | Blocked |
-| Delete retained messages | Yes | Blocked |
-| Publish to `$…` / `_…` administration or reply subjects | Yes | Blocked |
-| Publish with `Nats-Rollup` | Yes | Blocked |
+| Operation | Reader | Writer | Admin |
+| --- | --- | --- | --- |
+| View monitoring, streams, messages, live capture | Yes | Yes | Yes |
+| Publish application messages | Blocked | Yes | Yes |
+| Create/edit/import/purge/delete streams | Blocked | Blocked | Yes |
+| Delete retained messages | Blocked | Blocked | Yes |
+| Publish to `$…` / `_…` administration or reply subjects | Blocked | Blocked | Both endpoints on loopback only |
+| Publish with `Nats-Rollup` | Blocked | Blocked | Both endpoints on loopback only |
 
-These are **dashboard restrictions**, not NATS account permissions. Other clients using the same credentials are governed by the server's NATS authorization policy. Loopback classification is based on literal localhost/loopback endpoints; if you forward a remote server through localhost, use a non-loopback profile endpoint to retain remote restrictions. Host profiles themselves may be added/connected without modifying NATS streams. Remote operation tests use local fixtures only and do not publish to the real remote server.
+Messages, live capture, and publishing require a client connection. A profile defaults to Admin when both endpoints are on loopback and to Reader otherwise; profiles saved by earlier versions get the same default, so a remote host that could publish before starts as Reader until it is set to Writer. In the host dialog the access level follows the endpoints until you pick one, and choosing Admin for a non-loopback host shows a warning. Changing only the access level or name of a connected profile does not reconnect it.
+
+These are **dashboard restrictions** that guard against mistakes, not NATS account permissions; anyone using the dashboard can change a profile's access level. Other clients using the same credentials are governed by the server's NATS authorization policy. Loopback classification is based on literal localhost/loopback endpoints; if you forward a remote server through localhost, use a non-loopback profile endpoint to retain remote restrictions. Host profiles themselves may be added/connected without modifying NATS streams. Remote operation tests use local fixtures only and do not publish to the real remote server.
 
 ## macOS desktop app and DMG
 

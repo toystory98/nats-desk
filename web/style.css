@@ -51,3 +51,4 @@ main{margin-left:140px;padding:36px 38px 50px;display:flex;flex-direction:column
 @media(max-width:650px){.nav-settings{margin-top:0}main{min-height:0}}
 @media(max-width:420px){aside .nav-settings{width:auto}}
 #notice .link{border:0;background:none;padding:0;margin-left:6px;color:inherit;font-weight:650;text-decoration:underline;border-radius:4px}
+.host-access{margin:16px 0;font-size:12px;font-weight:550;color:var(--text)}.host-access>span{display:block;margin-bottom:7px}.host-access .segmented{display:inline-flex}.host-access small{display:block;font-size:10px;color:var(--muted);font-weight:400;margin-top:7px}.role-warning{color:var(--danger-text);font-size:11px;font-weight:550;margin:8px 0 0}

@@ -43,6 +43,14 @@ type app struct {
 	client   *http.Client
 	hosts    *hostManager
 	snapshot atomic.Bool
+	role     string
+}
+
+func (a *app) access() string {
+	if a.role != "" {
+		return a.role
+	}
+	return defaultRole(a.cfg.NATS, a.cfg.Monitor)
 }
 
 func main() {
@@ -177,13 +185,13 @@ func (a *app) handler() http.Handler {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			if !canManage(a.cfg) && r.Method != "GET" && !(r.Method == "POST" && r.URL.Path == "/api/publish") {
+			if role := a.access(); !allowed(role, r) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(map[string]string{"error": "Remote host: viewing and publishing only. Management operations are blocked."})
+				json.NewEncoder(w).Encode(map[string]string{"error": deniedMessage[role]})
 				return
 			}
-			if a.nc == nil && r.URL.Path != "/api/overview" && r.URL.Path != "/api/streams" && r.URL.Path != "/api/consumers" {
+			if a.nc == nil && !((r.Method == "GET" || r.Method == "HEAD") && (r.URL.Path == "/api/overview" || r.URL.Path == "/api/streams" || r.URL.Path == "/api/consumers")) {
 				fail(w, errors.New("Configure and connect the NATS client URL for this host to view or publish messages"))
 				return
 			}
@@ -215,7 +223,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 func (a *app) overview(w http.ResponseWriter, r *http.Request) {
-	out := map[string]any{"connected": a.nc != nil && a.nc.IsConnected(), "status": "MONITOR ONLY", "time": time.Now(), "server": a.cfg.Monitor, "can_manage": canManage(a.cfg)}
+	out := map[string]any{"connected": a.nc != nil && a.nc.IsConnected(), "status": "MONITOR ONLY", "time": time.Now(), "server": a.cfg.Monitor, "role": a.access()}
 	if a.nc != nil {
 		out["status"] = a.nc.Status().String()
 		out["server"] = a.nc.ConnectedAddr()
@@ -657,7 +665,7 @@ func (a *app) publish(w http.ResponseWriter, r *http.Request) {
 		fail(w, errors.New("publish requires an exact subject without wildcards"))
 		return
 	}
-	if !canManage(a.cfg) {
+	if !canManage(a.cfg) || a.access() != "admin" {
 		if err := remotePublishAllowed(in.Subject, in.Headers); err != nil {
 			fail(w, err)
 			return
