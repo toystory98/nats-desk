@@ -50,3 +50,4 @@ main{margin-left:140px;padding:36px 38px 50px;display:flex;flex-direction:column
 .settings-card .card-title{margin-bottom:6px}.setting-row{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;padding:18px 0;border-top:1px solid var(--border)}.setting-row>div:first-child{flex:0 1 320px;min-width:min(100%,200px)}.setting-row b{display:block;font-size:14px}.setting-row small{display:block;color:var(--muted);margin-top:5px;line-height:1.5;font-size:12px}.setting-row .segmented{flex-wrap:wrap;gap:2px;min-width:0}.setting-row .segmented button{padding:8px 14px;font-weight:600}.settings-foot{display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap}
 @media(max-width:650px){.nav-settings{margin-top:0}main{min-height:0}}
 @media(max-width:420px){aside .nav-settings{width:auto}}
+#notice .link{border:0;background:none;padding:0;margin-left:6px;color:inherit;font-weight:650;text-decoration:underline;border-radius:4px}
