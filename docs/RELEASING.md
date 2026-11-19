@@ -30,6 +30,8 @@ The secret is used only by the tag-triggered release job. Forks must use their o
 
 ## Publish a version
 
+If the release changes what users see or do, add an `<article data-release="X.Y.Z">` for it at the top of `#whats-new-dialog` in `web/index.html`. NATS Desk shows release notes the user has not seen once, the first time it opens after installing or updating, and they can reopen them from Settings. A release without an article shows nothing.
+
 Change `VERSION` to a new, increasing `major.minor.patch` number, update code, then:
 
 ```sh

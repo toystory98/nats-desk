@@ -108,6 +108,11 @@ $('#refresh').onclick=safe(refreshNow);
 document.addEventListener('visibilitychange',()=>{if(document.hidden){clearTimeout(refreshTimer);refreshTimer=0}else if(hostProfiles.length)refreshNow()});
 document.addEventListener('click',e=>{const menu=$('#refresh-menu');if(menu.open&&!menu.contains(e.target))menu.open=false});
 syncRefreshControls();
+const WHATS_NEW_KEY='nats-desk-whats-new',newerRelease=(a,b)=>a.localeCompare(b,undefined,{numeric:true})>0,newestRelease=list=>list.map(r=>r.dataset.release).reduce((a,b)=>newerRelease(b,a)?b:a);
+function openWhatsNew(all){let seen='0.0.0';if(!all){try{seen=localStorage.getItem(WHATS_NEW_KEY)||'0.0.0'}catch{return}}const releases=$$('#whats-new-dialog [data-release]');releases.forEach(r=>r.hidden=!all&&!newerRelease(r.dataset.release,seen));const shown=releases.filter(r=>!r.hidden);if(!shown.length)return;$('#whats-new-title').textContent='NATS Desk '+newestRelease(shown);$('#whats-new-dialog').classList.toggle('multiple',shown.length>1);$('#whats-new-dialog').showModal()}
+$('#whats-new-dialog').addEventListener('close',()=>{try{localStorage.setItem(WHATS_NEW_KEY,newestRelease($$('#whats-new-dialog [data-release]')))}catch{}});
+$('#settings-whats-new').onclick=()=>openWhatsNew(true);
+openWhatsNew(false);
 function duration(ns){if(!ns)return '0s';const s=ns/1e9;if(s%3600===0)return `${s/3600}h`;if(s%60===0)return `${s/60}m`;return `${s}s`}
 function retentionHelp(){$('#retention-help').textContent={limits:'Limits: keep messages until an age, size, or count limit is reached.',interest:'Interest: messages are retained only while consumers need them. With no consumers, published messages may be removed immediately.',workqueue:'Work queue: messages are removed after acknowledgment. Consumer filters must not overlap.'}[$('#stream-form').elements.retention.value]}
 $('#stream-form').elements.retention.onchange=retentionHelp;
